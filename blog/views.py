@@ -1,3 +1,4 @@
+from django.contrib.postgres.search import SearchVector, SearchQuery, SearchRank
 from django.core.mail import send_mail
 from django.core.paginator import Paginator
 from django.db.models import Count
@@ -7,7 +8,7 @@ from django.views.decorators.http import require_POST
 from django.views.generic import ListView
 from taggit.models import Tag
 
-from .forms import EmailPostForm, CommentForm
+from .forms import EmailPostForm, CommentForm, SearchForm
 from .models import Post
 
 
@@ -34,7 +35,7 @@ def post_list(request, tag_slug=None):
     #     # выдать последнюю страницу результатов
     #     posts = paginator.page(paginator.num_pages)
     posts = paginator.get_page(page_number)  # try except можно заменить методом get_page
-    return render(request, 'blog/post/list.html', {'posts': posts, 'tag':tag})
+    return render(request, 'blog/post/list.html', {'posts': posts, 'tag': tag})
 
 
 def post_detail(request, year, month, day, post):
@@ -54,7 +55,8 @@ def post_detail(request, year, month, day, post):
     similar_posts = Post.published.filter(tags__in=post_tags_ids).exclude(id=post.id)
     similar_posts = similar_posts.annotate(same_tags=Count('tags')).order_by('-same_tags', '-publish')[:4]
 
-    return render(request,'blog/post/detail.html',{'post': post,'comments': comments, 'form': form, 'similar_posts': similar_posts})
+    return render(request, 'blog/post/detail.html',
+                  {'post': post, 'comments': comments, 'form': form, 'similar_posts': similar_posts})
 
 
 class PostListView(ListView):
@@ -88,6 +90,7 @@ def post_share(request, post_id):
         form = EmailPostForm()
     return render(request, 'blog/post/share.html', {'post': post, 'form': form, 'sent': sent})
 
+
 @require_POST
 # используем предоставляемый веб-фреймворком Django декоратор require_POST,
 # чтобы разрешить запросы методом POST только для этого представления
@@ -105,4 +108,30 @@ def post_comment(request, post_id):
         comment.post = post
         # Сохранить комментарий в базе данных
         comment.save()
-    return render(request, 'blog/post/comment.html', {'post': post, 'form': form, 'comment':comment})
+    return render(request, 'blog/post/comment.html', {'post': post, 'form': form, 'comment': comment})
+
+
+def post_search(request):
+    form = SearchForm()
+    query = None
+    results = []
+    if 'query' in request.GET:
+        form = SearchForm(request.GET)
+        if form.is_valid():
+            query = form.cleaned_data['query']
+            # results = Post.published.annotate(search=SearchVector('title', 'body'),).filter(search=query)
+            search_vector = SearchVector('title', weight='A') + SearchVector('body', weight='B')
+             # search_vector = SearchVector('title', 'body',)
+            #создается объект SearchQuery, по нему фильтруются результаты
+            search_query = SearchQuery(query)
+            # для упорядочивания результатов по релевантности используется SearchRank.
+            # results = Post.published.annotate(search=search_vector, rank=SearchRank(search_vector, search_query))\
+            #     .filter(search=search_query).order_by('-rank')
+            results = Post.published.annotate(search=search_vector,rank=SearchRank(search_vector, search_query))\
+                .filter(rank__gte=0.3).order_by('-rank')
+    return render(request,'blog/post/search.html',{'form': form, 'query': query,'results': results})
+# В приведенном выше исходном коде к векторам поиска, сформированным
+# с использованием полей title и body, применяются разные веса.
+# По умолчанию веса таковы: D, C, B и A, и они относятся соответственно к числам 0.1, 0.2, 0.4 и 1.0
+# Совпадения с заголовком будут преобладать над совпадениями с содержимым тела поста.
+# Результаты фильтруются, чтобы отображать только те, у которых ранг выше 0.3.
